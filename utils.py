@@ -1,5 +1,20 @@
-from itertools import islice
+import itertools
+import json
 from pathlib import Path
+
+
+try:
+  batched = itertools.batched
+except:
+  def batched(iterable, n, *, strict=False):
+    if n < 1:
+      raise ValueError('n must be at least one')
+    iterator = iter(iterable)
+    while batch := tuple(itertools.islice(iterator, n)):
+      if strict and len(batch) != n:
+        raise ValueError('batched(): incomplete batch')
+      yield batch
+
 
 def parse_srt(file_path):
   subtitles = []
@@ -31,6 +46,7 @@ def parse_srt(file_path):
 
   return subtitles
 
+
 def write_srt(subtitles, output_path):
   with Path(output_path).open('w', encoding='utf-8') as file:
     for subtitle in subtitles:
@@ -46,11 +62,29 @@ def write_srt(subtitles, output_path):
 
       file.write("\n")
 
-def batched(iterable, n, *, strict=False):
-  if n < 1:
-    raise ValueError('n must be at least one')
-  iterator = iter(iterable)
-  while batch := tuple(islice(iterator, n)):
-    if strict and len(batch) != n:
-      raise ValueError('batched(): incomplete batch')
-    yield batch
+
+def parse_json(json_path):
+  required_keys = {"n", "timestamp", "text"}
+  with Path(json_path).open("r") as f:
+    data = json.load(f)
+
+  if not isinstance(data, list):
+    raise ValueError("JSON must be an array")
+
+  valid_data = []
+  for idx, item in enumerate(data):
+    if not isinstance(item, dict):
+      raise ValueError(f"Item at index {idx} is not a JSON object")
+
+    missing_keys = required_keys - item.keys()
+    if missing_keys:
+      raise ValueError(f"Item at index {idx} is missing required keys: {', '.join(missing_keys)}")
+
+    text = item.get("original_text", item["text"])
+    valid_data.append({
+      "n": item["n"],
+      "timestamp": item["timestamp"],
+      "text": text,
+    })
+
+  return valid_data

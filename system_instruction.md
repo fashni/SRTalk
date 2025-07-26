@@ -25,7 +25,7 @@ A JSON array of objects in the following format:
 
 ## Output Format:
 
-A JSON array of objects in the *same format*, where the `text` values have been translated into natural-sounding {lang}. The `n` values must correspond exactly to those in the input.
+A JSON array of objects in the *same format*, where the `text` values have been translated into natural-sounding {lang}. The `n` values must correspond exactly to those in the input. It must be a valid JSON string, so handle character escapes inside `text` carefully. Example character escapes for double quote: `\"`; and single quote: `\'`.
 
 ---
 

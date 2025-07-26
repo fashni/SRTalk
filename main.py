@@ -3,18 +3,17 @@ import json
 import math
 import os
 import time
-from itertools import batched
 from pathlib import Path
 
 from google import genai
 from pycountry import languages
 from tqdm import tqdm
-from utils import parse_srt, write_srt
+from utils import batched, parse_json, parse_srt, write_srt
 
 
 def get_chat_client(api_key, model, system_instruction=None, thinking=False):
   client = genai.Client(api_key=api_key)
-  
+
   try:
     models = [m.name.removeprefix("models/") for m in client.models.list()]
   except genai.errors.ClientError as e:
@@ -36,9 +35,18 @@ def get_chat_client(api_key, model, system_instruction=None, thinking=False):
 
 def parse_language(language):
   lang = languages.get(name=language)
-  if lang is None:
-    raise ValueError("Invalid language")
-  return lang
+  if lang:
+    return lang
+
+  lang = languages.get(alpha_2=language)
+  if lang:
+    return lang
+
+  lang = languages.get(alpha_3=language)
+  if lang:
+    return lang
+
+  raise ValueError(f"Invalid language: {language}")
 
 
 def parse_args():
@@ -50,16 +58,22 @@ def parse_args():
   parser.add_argument("-m", "--model", type=str, default='gemini-2.5-flash')
   parser.add_argument("-e", "--example", action="store_true")
   parser.add_argument("-t", "--thinking", action="store_true")
+  parser.add_argument("--save-json", action="store_true")
+  parser.add_argument("--start-index", type=int, default=1)
+  parser.add_argument("--end-index", type=int, default=None)
   return parser.parse_args()
 
 
-def parse_response(response):
+def parse_response(response, original):
   text: str = response.text
   text = text.removeprefix('```json').removesuffix('```')
   try:
-    return json.loads(text)
+    results = json.loads(text)
   except json.JSONDecodeError:
     return
+
+  ns = {item['n'] for item in original}
+  return [item for item in results if item['n'] in ns]
 
 
 def parse_instruction(language, example=True):
@@ -68,14 +82,64 @@ def parse_instruction(language, example=True):
   with instruction_path.open("r") as f:
     instruction = f.read().format(lang=language.name)
 
-  if example:
-    example_dir = Path("examples")
-    example_path = example_dir / f"example_{language.alpha_2}.md"
-    assert example_path.is_file()
-    with example_path.open("r") as f:
-      instruction += f.read()
+  if not example:
+    return instruction
+  
+  example_dir = Path("examples")
+  example_path = example_dir / f"example_{language.alpha_2}.md"
+  if not example_path.is_file():
+    print(f"Warning: No example file for the target language: {language.alpha_2}")
+    print("Proceed without the example")
+    return instruction
+
+  with example_path.open("r") as f:
+    instruction += f.read()
 
   return instruction
+
+
+def parse_input(input_path: Path):
+  if not input_path.is_file():
+    raise FileNotFoundError(f"No such file exists: {str(input_path)}")
+
+  suffix = input_path.suffix.casefold()
+  if suffix not in [".json", ".srt"]:
+    raise ValueError(f"Unsupported file type: {suffix}")
+
+  if suffix == ".srt":
+    return parse_srt(input_path)
+
+  return parse_json(input_path)
+
+
+def is_valid(results, original):
+  if results is None or len(results) != len(original):
+    return False
+
+  for r, o in zip(results, original):
+    if r['n'] != o['n']:
+      return False
+
+  return True
+
+
+def translate(client, texts, nbatch, cooldown):
+  success = []
+  failed = []
+  for batch in tqdm(batched(texts, nbatch), total=math.ceil(len(texts)/nbatch)):
+    batch_text = json.dumps(list(batch), indent=2)
+    try:
+      response = client.send_message(batch_text)
+      res = parse_response(response, batch)
+      if is_valid(res, batch):
+        success.append(res)
+      else:
+        failed.append(batch)
+    except Exception as e:
+      print(repr(e))
+    finally:
+      time.sleep(cooldown)
+  return success, failed
 
 
 def main():
@@ -87,40 +151,45 @@ def main():
   system_instruction = parse_instruction(args.language, args.example)
   chat = get_chat_client(api_key, args.model, system_instruction, args.thinking)
   if chat is None:
+    print("Failed to get the client.")
     return
 
-  srt = parse_srt(args.srt_path)
+  srt = parse_input(args.srt_path)
+  if args.start_index > srt[-1]['n']:
+    print("Start index must not exceed the highest index:")
+    print(f"max index: {srt[-1]['n']}")
+    return
+
+  end_index = args.end_index or srt[-1]['n']
+  if end_index < args.start_index:
+    print("Start index must be less than end index.")
+    return
+
+  srt = srt[args.start_index-1:end_index]
+
   texts = [{'n': s['n'], 'text': s['text']} for s in srt]
   timestamps = [s['timestamp'] for s in srt]
 
-  translated = []
-  while True:
-    for batch in tqdm(batched(texts, args.batch), total=math.ceil(len(texts)/args.batch)):
-      batch_text = json.dumps(list(batch), indent=2)
-      while True:
-        try:
-          response = chat.send_message(batch_text)
-          res = parse_response(response)
-          if res is not None:
-            translated += res
-            break
-        except Exception as e:
-          print(e.message)
-        finally:
-          time.sleep(args.cooldown)
+  success, failed = translate(chat, texts, args.batch, args.cooldown)
+  while len(failed) > 0:
+    chat = get_chat_client(api_key, args.model, system_instruction, args.thinking)
+    failed_texts = [item for batch in failed for item in batch]
+    s, failed = translate(chat, failed_texts, args.batch, args.cooldown)
+    success += s
 
-    if len(translated) == len(srt):
-      print("Translation finished.")
-      results = [{**tr, 'timestamp': ts, 'original_text': s['text']} for tr, ts, s in zip(translated, timestamps, srt)]
-      write_srt(results, args.srt_path.with_suffix(f".{args.language.alpha_2}.srt"))
-      break
+  print("Translation finished.")
+  translated = sorted([item for batch in success for item in batch], key=lambda x: x['n'])
+  assert len(translated) == len(srt)
 
-    print("Translation failed.")
-    retry = input("Retry? (y/n)")
-    if retry.casefold in ['n', 'no']:
-      break
+  results = [
+    {**tr, 'timestamp': ts, 'original_text': s['text']}
+    for tr, ts, s in zip(translated, timestamps, srt)
+  ]
+  write_srt(results, args.srt_path.with_suffix(f".{args.language.alpha_2}.srt"))
+  if args.save_json:
+    with args.srt_path.with_suffix(f".{args.language.alpha_2}.json").open("w") as f:
+      json.dump(results, f, indent=2)
 
 
 if __name__ == "__main__":
   main()
-  
