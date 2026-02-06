@@ -1,0 +1,11 @@
+[project]
+name = "SRTalk"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "google-genai>=1.30.0",
+    "pycountry>=24.6.1",
+    "tqdm>=4.67.1",
+]
