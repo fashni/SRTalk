@@ -55,7 +55,7 @@ def parse_args():
   parser.add_argument("-b", "--batch", type=int, default=50)
   parser.add_argument("-c", "--cooldown", type=int, default=20)
   parser.add_argument("-l", "--language", type=parse_language)
-  parser.add_argument("-m", "--model", type=str, default='gemini-flash-latest')
+  parser.add_argument("-m", "--model", type=str, default='gemini-2.5-flash')
   parser.add_argument("-e", "--example", action="store_true")
   parser.add_argument("-t", "--thinking", action="store_true")
   parser.add_argument("--list-models", action="store_true")
